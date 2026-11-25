@@ -83,6 +83,7 @@ MarsArmNode::MarsArmNode() : Node("mars_arm") {
     this->declare_parameter("baud_rate", 1000000);
     this->declare_parameter("control_frequency", 100.0);
     this->declare_parameter("arm_state_publish_rate", 50.0);
+    this->declare_parameter("arm_state_ext_rate", 100.0);
     this->declare_parameter("joint_state_publish_rate", 25.0);
     this->declare_parameter("trajectory_rate_hz", 30.0);
     this->declare_parameter("max_jerk", 0.0);  // rad/s³, 0 = disabled
@@ -96,6 +97,7 @@ MarsArmNode::MarsArmNode() : Node("mars_arm") {
         return rate > 0.0 ? std::max(1, static_cast<int>(std::lround(control_frequency_ / rate))) : 1;
     };
     arm_state_publish_divisor_ = publish_divisor("arm_state_publish_rate");
+    arm_state_ext_publish_divisor_ = publish_divisor("arm_state_ext_rate");
     joint_state_publish_divisor_ = publish_divisor("joint_state_publish_rate");
     auto joint_names_param = this->get_parameter("joints").as_string_array();
 
@@ -123,15 +125,21 @@ MarsArmNode::MarsArmNode() : Node("mars_arm") {
     // ── ARM publishers / subscribers / services ──
     RCLCPP_DEBUG(this->get_logger(), "Setting up ARM publishers/subscribers/services");
     arm_state_pub_ = this->create_publisher<sensor_msgs::msg::JointState>("/mars/arm/state", 10);
+    arm_state_ext_pub_ = this->create_publisher<mars_msgs::msg::ArmState>("/mars/arm/state_ext", 10);
     // Latched: the standing grip target must reach subscribers that start (or
     // restart) after the last command, or they fold/seed j6 from a stale zero.
     arm_command_state_pub_ = this->create_publisher<sensor_msgs::msg::JointState>("/mars/arm/command_state",
                                                                                   rclcpp::QoS(1).transient_local());
     arm_status_pub_ = this->create_publisher<mars_msgs::msg::ArmStatus>("/mars/arm/status", 10);
+    capabilities_pub_ = this->create_publisher<std_msgs::msg::String>(
+        "/robot/capabilities", rclcpp::QoS(1).transient_local());
 
     auto cmd_qos = rclcpp::QoS(1).best_effort();
     arm_command_sub_ = this->create_subscription<std_msgs::msg::Float64MultiArray>(
         "/mars/arm/commands", cmd_qos, std::bind(&MarsArmNode::armCommandCallback, this, std::placeholders::_1));
+    arm_command_ext_sub_ = this->create_subscription<mars_msgs::msg::ArmCommand>(
+        "/mars/arm/joint_commands", cmd_qos,
+        std::bind(&MarsArmNode::armCommandExtCallback, this, std::placeholders::_1));
 
     arm_torque_on_service_ = this->create_service<std_srvs::srv::Trigger>(
         "/mars/arm/torque_on",
@@ -219,6 +227,7 @@ MarsArmNode::MarsArmNode() : Node("mars_arm") {
     idle_rest_timer_ = this->create_wall_timer(std::chrono::seconds(1), std::bind(&MarsArmNode::idleRestCallback, this),
                                                rest_callback_group_);
     releaseArm();  // the boot grace counts from here: servo init above took seconds
+    publishCapabilities();
 
     RCLCPP_INFO(this->get_logger(), "Mars Arm Node ready!");
 }

@@ -260,7 +260,8 @@ bool MarsArmNode::reportTrippedServosLocked(mars_msgs::msg::ArmStatus& status) {
 }
 
 void MarsArmNode::reportLoadAndTemperatureLocked(mars_msgs::msg::ArmStatus& status) {
-    for (const auto& config : joint_configs_) {
+    for (size_t i = 0; i < joint_configs_.size(); ++i) {
+        const auto& config = joint_configs_[i];
         const int servo_id = config.servo_id;
 
         int16_t present_load = dynamixel_->readPresentLoad(servo_id);
@@ -272,6 +273,9 @@ void MarsArmNode::reportLoadAndTemperatureLocked(mars_msgs::msg::ArmStatus& stat
         }
 
         uint8_t temperature = dynamixel_->readPresentTemperature(servo_id);
+        if (i < last_temperatures_.size()) {
+            last_temperatures_[i] = static_cast<double>(temperature);
+        }
         if (temperature >= kTemperatureWarningC) {
             status.is_ok = false;
             status.error = "Servo " + std::to_string(servo_id) + " high temperature (" +
@@ -339,6 +343,137 @@ void MarsArmNode::armCommandCallback(const std_msgs::msg::Float64MultiArray::Sha
     } catch (const std::exception& e) {
         RCLCPP_ERROR(this->get_logger(), "Error in arm command callback: %s", e.what());
     }
+}
+
+void MarsArmNode::armCommandExtCallback(const mars_msgs::msg::ArmCommand::SharedPtr msg) {
+    try {
+        if (msg->joints.empty()) {
+            RCLCPP_ERROR(this->get_logger(), "ArmCommand contained no joints");
+            return;
+        }
+        if (!(msg->ttl_s > 0.0) || !std::isfinite(msg->ttl_s)) {
+            RCLCPP_ERROR(this->get_logger(), "ArmCommand ttl_s must be positive");
+            return;
+        }
+
+        std::vector<double> measured;
+        {
+            std::lock_guard<std::mutex> lock(joint_state_mutex_);
+            measured = latest_joint_positions_;
+        }
+        if (measured.size() != 6) {
+            RCLCPP_ERROR(this->get_logger(), "ArmCommand needs a current six-joint state");
+            return;
+        }
+
+        claimArm();
+        std::lock_guard<std::mutex> lock(arm_command_mutex_);
+        for (const auto& command : msg->joints) {
+            if (!command.valid) {
+                continue;
+            }
+            auto it = std::find(joint_names_.begin(), joint_names_.end(), command.name);
+            if (it == joint_names_.end()) {
+                RCLCPP_WARN(this->get_logger(), "ArmCommand has unknown joint %s", command.name.c_str());
+                continue;
+            }
+            const int index = static_cast<int>(std::distance(joint_names_.begin(), it));
+            const auto& config = joint_configs_[index];
+            double target = measured[index];
+
+            if (command.mode == "position") {
+                target = command.position;
+            } else if (command.mode == "velocity") {
+                target = measured[index] + command.velocity / control_frequency_;
+            } else {
+                double torque = 0.0;
+                if (command.mode == "effort") {
+                    torque = command.effort;
+                } else if (command.mode == "current") {
+                    if (config.torque_constant <= 0.0) {
+                        RCLCPP_ERROR(this->get_logger(), "%s cannot map current: torque_constant is unset",
+                                     command.name.c_str());
+                        continue;
+                    }
+                    torque = command.current * config.torque_constant * config.gear_ratio;
+                } else if (command.mode == "pwm") {
+                    if (config.stall_torque <= 0.0 || config.pwm_limit <= 0) {
+                        RCLCPP_ERROR(this->get_logger(), "%s cannot map PWM: stall_torque/pwm_limit is unset",
+                                     command.name.c_str());
+                        continue;
+                    }
+                    torque = (command.pwm / static_cast<double>(config.pwm_limit)) * config.stall_torque;
+                } else {
+                    RCLCPP_ERROR(this->get_logger(), "ArmCommand has unsupported mode %s", command.mode.c_str());
+                    continue;
+                }
+                if (config.kp_eff <= 0.0 || config.max_lead <= 0.0) {
+                    RCLCPP_ERROR(this->get_logger(),
+                                 "%s cannot map torque: kp_eff/max_lead are unset (bench-identify first)",
+                                 command.name.c_str());
+                    continue;
+                }
+                // Position-servo adapter: the identified position-loop stiffness
+                // turns the requested torque into a bounded target lead.
+                torque = std::clamp(torque, -config.stall_torque, config.stall_torque);
+                const double lead = std::clamp(torque / config.kp_eff, -config.max_lead, config.max_lead);
+                target = measured[index] + lead;
+            }
+
+            latest_target_[index] = target;
+            joint_modes_[index] = command.mode;
+            has_target_ = true;
+        }
+
+        if (gain_mode_ != GainMode::TELEOP) {
+            gain_mode_ = GainMode::TELEOP;
+            RCLCPP_INFO(this->get_logger(), "Gain mode -> TELEOP (multi-mode command stream detected)");
+        }
+    } catch (const std::exception& e) {
+        RCLCPP_ERROR(this->get_logger(), "Error in multi-mode arm command callback: %s", e.what());
+    }
+}
+
+void MarsArmNode::publishCapabilities() {
+    nlohmann::json capabilities;
+    capabilities["schema"] = "wbc-capabilities-v1";
+    capabilities["robot"] = "innate_mars";
+    capabilities["backend"] = "innate_os";
+    capabilities["base"] = {{"kind", "planar"}, {"dof", 2}};
+    capabilities["arms"] = nlohmann::json::array();
+    capabilities["joints"] = nlohmann::json::object();
+
+    for (size_t i = 0; i < joint_configs_.size(); ++i) {
+        const auto& config = joint_configs_[i];
+        const std::string name = i < joint_names_.size() ? joint_names_[i] : ("joint" + std::to_string(i + 1));
+        nlohmann::json joint;
+        joint["motor"] = config.motor_type;
+        joint["has_current"] = config.current_limit > 0;
+        joint["has_pwm"] = true;
+        joint["control_mode"] = config.control_mode;
+        joint["kp_eff"] = config.kp_eff;
+        joint["kd_eff"] = config.kd_eff;
+        joint["max_lead"] = config.max_lead;
+        joint["torque_constant"] = config.torque_constant;
+        joint["gear_ratio"] = config.gear_ratio;
+        joint["stall_torque"] = config.stall_torque;
+        joint["torque_limit"] = config.stall_torque;
+        joint["position_limits"] = {config.min_pos_rad, config.max_pos_rad};
+        joint["gripper"] = (i == 5);
+        capabilities["joints"][name] = joint;
+    }
+
+    capabilities["arms"].push_back({
+        {"name", "primary"},
+        {"joint_group", "primary_arm"},
+        {"dof", 5},
+        {"ee_link", "ee_link"},
+        {"gripper", {{"name", "primary_gripper"}, {"dof", 1}, {"mode", "position"}}},
+    });
+
+    std_msgs::msg::String message;
+    message.data = capabilities.dump();
+    capabilities_pub_->publish(message);
 }
 
 // ========== TORQUE / REBOOT / FIX-ERROR SERVICE CALLBACKS ==========

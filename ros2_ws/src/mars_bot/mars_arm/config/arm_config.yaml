@@ -42,6 +42,13 @@
     joints: ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6", "joint_7"]
 
     joint_1:
+      # Torque adapter placeholders; bench-identify before hardware use.
+      kp_eff: 50.0
+      kd_eff: 1.0
+      max_lead: 0.05
+      torque_constant: 0.0
+      gear_ratio: 1.0
+      stall_torque: 1.5
       servo_id: 1
       motor_type: "XL430-W250"
       position_limits: [-1.5708, 1.5708]
@@ -54,6 +61,12 @@
       gains_teleop: [300, 10, 1000, 0, 0] # November teleop gains
 
     joint_2:
+      kp_eff: 50.0
+      kd_eff: 1.0
+      max_lead: 0.05
+      torque_constant: 0.0
+      gear_ratio: 1.0
+      stall_torque: 1.5
       servo_id: 2
       motor_type: "XC430-W150"
       position_limits: [-1.5708, 1.22]
@@ -66,6 +79,12 @@
       gains_teleop: [300, 200, 100, 0, 0] # November teleop gains
 
     joint_3:
+      kp_eff: 50.0
+      kd_eff: 1.0
+      max_lead: 0.05
+      torque_constant: 0.0
+      gear_ratio: 1.0
+      stall_torque: 1.5
       servo_id: 3
       motor_type: "XL430-W250"
       position_limits: [-1.5708, 1.7453]
@@ -78,6 +97,12 @@
       gains_teleop: [640, 100, 3600, 0, 0] # November teleop gains
 
     joint_4:
+      kp_eff: 50.0
+      kd_eff: 1.0
+      max_lead: 0.05
+      torque_constant: 0.0
+      gear_ratio: 1.0
+      stall_torque: 0.4
       servo_id: 4
       motor_type: "XC330-M288"
       position_limits: [-1.9199, 1.7453]
@@ -90,6 +115,12 @@
       gains_teleop: [400, 400, 1000, 0, 0] # November teleop gains
 
     joint_5:
+      kp_eff: 50.0
+      kd_eff: 1.0
+      max_lead: 0.05
+      torque_constant: 0.0
+      gear_ratio: 1.0
+      stall_torque: 0.4
       servo_id: 5
       motor_type: "XC330-M288"
       position_limits: [-1.5708, 1.5708]
@@ -101,6 +132,12 @@
       gains_teleop: [400, 0, 0, 0, 0]     # November teleop gains
 
     joint_6:
+      kp_eff: 50.0
+      kd_eff: 1.0
+      max_lead: 0.02
+      torque_constant: 0.0
+      gear_ratio: 1.0
+      stall_torque: 0.4
       servo_id: 6
       motor_type: "XC330-M288"
       position_limits: [-0.8727, 0.3491]

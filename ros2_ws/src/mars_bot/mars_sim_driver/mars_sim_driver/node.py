@@ -12,10 +12,13 @@ run unchanged -- see README "Virtual MARS driver".
   pub /mars/main_camera/points                    sensor_msgs/PointCloud2 xyz @8Hz (lazy)
   pub /mars/main_camera/left/camera_info          sensor_msgs/CameraInfo @8Hz
   pub /mars/arm/state                             sensor_msgs/JointState (joint1..6, rad) @20Hz
+  pub /mars/arm/state_ext                         mars_msgs/ArmState (position/velocity/effort/current/mode) @50Hz
+  pub /robot/capabilities                         std_msgs/String JSON, latched
   pub /joint_states                               sensor_msgs/JointState (+joint_head) @30Hz
   pub /mars/head/current_position                 std_msgs/String (JSON, degrees) @10Hz
   sub /cmd_vel                                    geometry_msgs/Twist
   sub /mars/arm/commands                          std_msgs/Float64MultiArray (6x rad, best-effort)
+  sub /mars/arm/joint_commands                    mars_msgs/ArmCommand (position/effort, best-effort)
   sub /mars/head/set_position                     std_msgs/Int32 (degrees)
   srv /mars/arm/goto_js, /goto_js_v2, /goto_js_trajectory (mars_msgs, if built)
   srv /mars/arm/torque_on|torque_off|reboot       std_srvs/Trigger (no-ops)
@@ -58,8 +61,10 @@ from .constants import CAMERA_CX, CAMERA_CY, CAMERA_FX, CAMERA_FY, CAMERA_HEIGHT
 from .remote_world import RemoteWorld
 
 try:
+    from mars_msgs.msg import ArmCommand, ArmState, JointStateExt
     from mars_msgs.srv import GotoJS, GotoJSTrajectory
 except ImportError:  # ros2_ws not sourced/built -- topic interface still works
+    ArmCommand = ArmState = JointStateExt = None
     GotoJS = GotoJSTrajectory = None
 
 # The real drivers' rates (30fps capture, JPEG every Nth frame). Keep exact:
@@ -76,6 +81,7 @@ ODOM_HZ = 30.0  # bringup.py odom_frequency
 SCAN_HZ = 6.0  # lidar.launch.py throttle
 JOINT_STATE_HZ = 30.0
 ARM_STATE_HZ = 20.0
+ARM_STATE_EXT_HZ = 50.0
 HEAD_POSITION_HZ = 10.0
 
 LIDAR_N_RAYS = 360
@@ -149,6 +155,11 @@ class VirtualMarsNode(Node):
         self._points_pub = self.create_publisher(PointCloud2, "/mars/main_camera/points", qos_profile_sensor_data)
         self._caminfo_pub = self.create_publisher(CameraInfo, "/mars/main_camera/left/camera_info", 10)
         self._arm_state_pub = self.create_publisher(JointState, "/mars/arm/state", 1)
+        self._arm_state_ext_pub = (
+            self.create_publisher(ArmState, "/mars/arm/state_ext", 1) if ArmState is not None else None
+        )
+        latched_caps = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self._capabilities_pub = self.create_publisher(String, "/robot/capabilities", latched_caps)
         self._joint_states_pub = self.create_publisher(JointState, "/joint_states", 1)
         self._head_pub = self.create_publisher(String, "/mars/head/current_position", latched)
 
@@ -171,6 +182,10 @@ class VirtualMarsNode(Node):
         self.create_subscription(
             Float64MultiArray, "/mars/arm/commands", self._on_arm_commands, qos_profile_sensor_data
         )
+        if ArmCommand is not None:
+            self.create_subscription(
+                ArmCommand, "/mars/arm/joint_commands", self._on_joint_commands, qos_profile_sensor_data
+            )
         self.create_subscription(Int32, "/mars/head/set_position", self._on_head_position, 10)
         # Sim-only. Bool, not Empty: rws cannot deserialize a zero-field message
         # from a browser and takes this subscriber down with it.
@@ -194,6 +209,9 @@ class VirtualMarsNode(Node):
         self.create_timer(1.0 / DEPTH_FPS, self._publish_camera_info)
         self.create_timer(1.0 / JOINT_STATE_HZ, self._publish_joint_states)
         self.create_timer(1.0 / ARM_STATE_HZ, self._publish_arm_state)
+        if ArmState is not None:
+            self.create_timer(1.0 / ARM_STATE_EXT_HZ, self._publish_arm_state_ext)
+        self._publish_capabilities()
         self.create_timer(1.0 / HEAD_POSITION_HZ, self._publish_head)
 
         threading.Thread(target=self._trajectory_loop, daemon=True).start()
@@ -626,6 +644,84 @@ class VirtualMarsNode(Node):
         msg.name = [*ARM_JOINTS, "joint_head"]  # same 7 as the real arm node
         msg.position = [positions[n] for n in msg.name]
         self._joint_states_pub.publish(msg)
+
+    def _on_joint_commands(self, msg) -> None:
+        """Multi-mode arm stream: position targets or direct effort in sim."""
+        with self._lock:
+            self._fail_active_traj()
+            for command in msg.joints:
+                if not command.valid or command.name not in ARM_JOINTS:
+                    continue
+                if command.mode == "position":
+                    self.sim.set_joint_target(command.name, float(command.position))
+                elif command.mode == "effort":
+                    self.sim.set_joint_torque(command.name, float(command.effort))
+                else:
+                    self.get_logger().warning(
+                        f"sim arm command mode {command.mode!r} is not implemented; use position or effort",
+                        throttle_duration_sec=5.0,
+                    )
+
+    def _publish_capabilities(self) -> None:
+        if not self._capabilities_pub:
+            return
+        capability = {
+            "schema": "wbc-capabilities-v1",
+            "robot": "innate_mars",
+            "backend": "innate_sim",
+            "base": {"kind": "planar", "dof": 2},
+            "arms": [
+                {
+                    "name": "primary",
+                    "joint_group": "primary_arm",
+                    "dof": 5,
+                    "ee_link": "ee_link",
+                    "gripper": {"name": "primary_gripper", "dof": 1, "mode": "position"},
+                }
+            ],
+            "joints": {
+                name: {
+                    "modes": ["position", "effort"],
+                    "has_current": False,
+                    "has_pwm": False,
+                }
+                for name in ARM_JOINTS
+            },
+            "sensors": {"ft": False, "contact_proxy": "mujoco_contact"},
+        }
+        message = String()
+        message.data = json.dumps(capability)
+        self._capabilities_pub.publish(message)
+
+    def _publish_arm_state_ext(self) -> None:
+        if self._arm_state_ext_pub is None:
+            return
+        try:
+            with self._lock:
+                rows = self.sim.joint_state_ext()
+                contacts = self.sim.contact_forces()
+        except (OSError, RuntimeError):
+            return
+        message = ArmState()
+        message.header.stamp = self._stamp()
+        message.torque_enabled = True
+        for row in rows:
+            joint = JointStateExt()
+            joint.name = row["name"]
+            joint.position = row["position"]
+            joint.velocity = row["velocity"]
+            joint.effort = row["effort"]
+            joint.current = row["current"]
+            joint.load = row["load"]
+            joint.pwm = row["pwm"]
+            joint.temperature = row["temperature"]
+            joint.mode = row["mode"]
+            joint.valid = row["valid"]
+            message.joints.append(joint)
+        for contact in contacts:
+            message.contact_names.append(f"{contact['geom1']}::{contact['geom2']}")
+            message.contact_wrenches.extend(contact["wrench"])
+        self._arm_state_ext_pub.publish(message)
 
     def _publish_arm_state(self) -> None:
         try:

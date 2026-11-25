@@ -132,6 +132,15 @@ struct JointConfig {
     int ff2 = 0;  // Acceleration feedforward gain (addr 76, range 0-16383)
     int profile_velocity = 0;
     int profile_acceleration = 0;
+    // Torque/position-servo adapter fields. kp_eff/max_lead are identified
+    // effective values; 0 means the joint has not been characterized and
+    // torque-mode commands fail closed.
+    double kp_eff = 0.0;
+    double kd_eff = 0.0;
+    double max_lead = 0.0;
+    double torque_constant = 0.0;  // N*m/A at the motor
+    double gear_ratio = 1.0;       // motor-to-joint
+    double stall_torque = 0.0;     // N*m, used for x430 load -> torque estimate
     // Head-specific fields (for joint 7)
     double head_min_angle_deg = 0.0;
     double head_max_angle_deg = 0.0;

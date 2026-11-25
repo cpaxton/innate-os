@@ -23,6 +23,12 @@ void MarsArmNode::loadJointConfigs(const std::vector<std::string>& joint_names) 
         this->declare_parameter(jn + ".homing_offset", 0);
         this->declare_parameter(jn + ".profile_velocity", 0);
         this->declare_parameter(jn + ".profile_acceleration", 0);
+        this->declare_parameter(jn + ".kp_eff", 0.0);
+        this->declare_parameter(jn + ".kd_eff", 0.0);
+        this->declare_parameter(jn + ".max_lead", 0.0);
+        this->declare_parameter(jn + ".torque_constant", 0.0);
+        this->declare_parameter(jn + ".gear_ratio", 1.0);
+        this->declare_parameter(jn + ".stall_torque", 0.0);
         this->declare_parameter(jn + ".gains_near", std::vector<int64_t>{});
         this->declare_parameter(jn + ".gains_far", std::vector<int64_t>{});
         this->declare_parameter(jn + ".gains_teleop", std::vector<int64_t>{});
@@ -80,6 +86,12 @@ void MarsArmNode::loadJointConfigs(const std::vector<std::string>& joint_names) 
         config.homing_offset = static_cast<int>(this->get_parameter(jn + ".homing_offset").as_int());
         config.profile_velocity = static_cast<int>(this->get_parameter(jn + ".profile_velocity").as_int());
         config.profile_acceleration = static_cast<int>(this->get_parameter(jn + ".profile_acceleration").as_int());
+        config.kp_eff = this->get_parameter(jn + ".kp_eff").as_double();
+        config.kd_eff = this->get_parameter(jn + ".kd_eff").as_double();
+        config.max_lead = this->get_parameter(jn + ".max_lead").as_double();
+        config.torque_constant = this->get_parameter(jn + ".torque_constant").as_double();
+        config.gear_ratio = this->get_parameter(jn + ".gear_ratio").as_double();
+        config.stall_torque = this->get_parameter(jn + ".stall_torque").as_double();
 
         RCLCPP_DEBUG(this->get_logger(),
                      "Joint %zu (%s): servo_id=%d, motor=%s, limits=[%.3f, %.3f] rad, pwm=%d, mode=%d, current=%d",

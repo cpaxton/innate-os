@@ -31,6 +31,10 @@ endif()
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ArmStatus.msg"
+  "msg/JointCommand.msg"
+  "msg/ArmCommand.msg"
+  "msg/JointStateExt.msg"
+  "msg/ArmState.msg"
   "action/RunStereoCalibration.action"
   "srv/LightCommand.srv"
   "srv/GotoJS.srv"

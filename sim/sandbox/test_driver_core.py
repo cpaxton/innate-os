@@ -81,6 +81,7 @@ def main() -> None:
     assert scan.min() > 0.05, f"lidar sees something at {scan.min():.3f}m (inside the robot?)"
     print(f"lidar: {hits}/360 rays hit, nearest {scan.min():.2f}m, farthest hit {scan[scan < 12].max():.2f}m")
 
+    check_torque_interface(sim)
     check_challenges(sim)  # last: it moves the sim clock and leaves a prop out
     check_concurrent_start(sim)
     check_stale_tick(sim)
@@ -88,6 +89,27 @@ def main() -> None:
     check_external_reset(sim)
     check_event_ordering(sim)
     print("PASS")
+
+
+def check_torque_interface(sim: VirtualMars) -> None:
+    """Direct-effort mode, joint-state rows, and contact telemetry."""
+    sim.reset()
+    sim.step(0.5)
+    start = sim.encoder_positions()["joint4"]
+    sim.set_joint_torque("joint4", 0.5)
+    sim.step(0.5)
+    moved = sim.encoder_positions()["joint4"] - start
+    assert abs(moved) > 0.02, f"joint4 only moved {moved:.4f} rad in effort mode"
+    assert abs(sim.joint_torques()["joint4"] - 0.5) < 1e-9
+    row = next(row for row in sim.joint_state_ext() if row["name"] == "joint4")
+    assert row["mode"] == "effort"
+    assert abs(row["effort"] - 0.5) < 1e-9
+    assert sim.contact_forces(), "contact_forces returned no contacts in a loaded scene"
+    sim.set_joint_target("joint4", start)
+    sim.step(0.5)
+    assert sim.joint_state_ext()[3]["mode"] == "position"
+    print(f"torque interface: joint4 moved {moved:+.3f} rad at 0.5 N*m; contact rows ok")
+    sim.reset()
 
 
 def check_challenges(sim: VirtualMars) -> None:
@@ -121,9 +143,9 @@ def check_challenges(sim: VirtualMars) -> None:
     def tick_now():
         mid_ticks.append(engine.tick(float(sim.data.time), sim.pose(), sim.object_centers(), engine.world_epoch))
 
-    def reset_and_tick():
+    def reset_and_tick(*args, **kwargs):
         tick_now()  # before the reset: the OLD world, on the OLD clock (900s)
-        real_reset()
+        return real_reset(*args, **kwargs)
 
     def drop_and_tick(*args, **kwargs):
         ok = real_drop(*args, **kwargs)

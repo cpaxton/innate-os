@@ -496,6 +496,8 @@ class WorldServer:
                 # stream below keeps ground truth for viewers.
                 joints = self.sim.encoder_positions()
                 targets = self.sim.joint_targets()
+                torques = self.sim.joint_torques()
+                modes = dict(self.sim._joint_modes)
                 sim_time = float(self.sim.data.time)
                 world_epoch = self.sim.world_epoch
             return {
@@ -506,6 +508,8 @@ class WorldServer:
                 "vel": [vx, vy, wz],
                 "joints": joints,
                 "targets": targets,
+                "torques": torques,
+                "modes": modes,
             }, None
         if op == "cmd_vel":
             with self.lock:
@@ -516,6 +520,22 @@ class WorldServer:
                 for name, value in req["targets"].items():
                     self.sim.set_joint_target(name, float(value))
             return {"ok": True}, None
+        if op == "joint_torque":
+            with self.lock:
+                self.sim.set_joint_torque(str(req["name"]), float(req["torque"]))
+            return {"ok": True}, None
+        if op == "joint_mode":
+            with self.lock:
+                self.sim.set_joint_mode(str(req["name"]), str(req["mode"]))
+            return {"ok": True}, None
+        if op == "joint_state_ext":
+            with self.lock:
+                rows = self.sim.joint_state_ext()
+            return {"ok": True, "joints": rows}, None
+        if op == "contact_forces":
+            with self.lock:
+                contacts = self.sim.contact_forces()
+            return {"ok": True, "contacts": contacts}, None
         if op == "reset":
             with self.lock:
                 self.sim.reset()
