@@ -57,6 +57,10 @@ target_include_directories(arm PUBLIC
   $<INSTALL_INTERFACE:include>
 )
 
+if(TARGET dynamixel_sdk::dynamixel_sdk)
+  target_link_libraries(arm dynamixel_sdk::dynamixel_sdk)
+endif()
+
 # Install C++ executables
 install(TARGETS
   arm

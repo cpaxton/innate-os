@@ -16,6 +16,9 @@
 #include "mars_msgs/srv/goto_js.hpp"
 #include "mars_msgs/srv/goto_js_trajectory.hpp"
 #include "mars_msgs/msg/arm_status.hpp"
+#include "mars_msgs/msg/arm_command.hpp"
+#include "mars_msgs/msg/arm_state.hpp"
+#include "mars_msgs/msg/joint_state_ext.hpp"
 #include <atomic>
 #include <cmath>
 #include <chrono>
@@ -63,6 +66,8 @@ class MarsArmNode : public rclcpp::Node {
 
     // ── Service & topic callbacks (arm_services.cpp) ────────────────────
     void armCommandCallback(const std_msgs::msg::Float64MultiArray::SharedPtr msg);
+    void armCommandExtCallback(const mars_msgs::msg::ArmCommand::SharedPtr msg);
+    void publishCapabilities();
     void armTorqueOnCallback(const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
                              std::shared_ptr<std_srvs::srv::Trigger::Response> response);
     void armTorqueOffCallback(const std::shared_ptr<std_srvs::srv::Trigger::Request> request,
@@ -119,6 +124,9 @@ class MarsArmNode : public rclcpp::Node {
     rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr arm_state_pub_;
     rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr arm_command_state_pub_;
     rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr arm_command_sub_;
+    rclcpp::Subscription<mars_msgs::msg::ArmCommand>::SharedPtr arm_command_ext_sub_;
+    rclcpp::Publisher<mars_msgs::msg::ArmState>::SharedPtr arm_state_ext_pub_;
+    rclcpp::Publisher<std_msgs::msg::String>::SharedPtr capabilities_pub_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr arm_torque_on_service_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr arm_torque_off_service_;
     rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr arm_reboot_service_;
@@ -133,6 +141,7 @@ class MarsArmNode : public rclcpp::Node {
 
     // Direct pass-through (guarded by arm_command_mutex_)
     std::array<double, 6> latest_target_{};
+    std::array<std::string, 6> joint_modes_{{"position", "position", "position", "position", "position", "position"}};
     bool has_target_{false};
     bool target_pending_{false};  // a trajectory wrote it since the pass-through last ran
     // Anything that commands the arm takes a new claim; going limp releases it,
@@ -179,9 +188,11 @@ class MarsArmNode : public rclcpp::Node {
     // state topics go out every Nth tick, the command echo and the head
     // position only when they change.
     int arm_state_publish_divisor_{1};
+    int arm_state_ext_publish_divisor_{1};
     int joint_state_publish_divisor_{1};
     unsigned publish_tick_{0};
     std::vector<int> last_published_command_;
+    std::array<double, 7> last_temperatures_{};
     int last_published_head_encoder_{-1};
     std::chrono::steady_clock::time_point last_head_publish_time_{};
 

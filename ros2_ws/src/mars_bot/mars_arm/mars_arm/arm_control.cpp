@@ -48,6 +48,35 @@ void MarsArmNode::controlTimerCallback() {
         if (publish_tick_ % arm_state_publish_divisor_ == 0) {
             arm_state_pub_->publish(arm_state_msg_);
         }
+        if (publish_tick_ % arm_state_ext_publish_divisor_ == 0) {
+            mars_msgs::msg::ArmState ext;
+            ext.header.stamp = this->now();
+            ext.torque_enabled = arm_torque_enabled_.load();
+            for (size_t j = 0; j < 6 && j < positions_rad.size(); ++j) {
+                mars_msgs::msg::JointStateExt joint;
+                const auto& config = joint_configs_[j];
+                joint.name = joint_names_[j];
+                joint.position = positions_rad[j];
+                joint.velocity = velocities_rad[j];
+                if (config.current_limit > 0) {
+                    joint.current = static_cast<double>(loads[j]) / 1000.0;  // mA -> A
+                    joint.load = 0.0;
+                    joint.effort = config.torque_constant > 0.0
+                                       ? joint.current * config.torque_constant * config.gear_ratio
+                                       : 0.0;
+                } else {
+                    joint.load = static_cast<double>(loads[j]) / 10.0;  // 0.1% -> %
+                    joint.current = 0.0;
+                    joint.effort = config.stall_torque > 0.0 ? (joint.load / 100.0) * config.stall_torque : 0.0;
+                }
+                joint.pwm = 0.0;
+                joint.temperature = last_temperatures_[j];
+                joint.mode = joint_modes_[j];
+                joint.valid = true;
+                ext.joints.push_back(joint);
+            }
+            arm_state_ext_pub_->publish(ext);
+        }
 
         // Store latest joint positions for trajectory planning
         {

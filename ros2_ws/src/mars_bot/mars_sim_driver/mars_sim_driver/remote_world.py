@@ -150,6 +150,20 @@ class RemoteWorld:
     def joint_targets(self) -> dict[str, float]:
         return dict(self._fresh_state()["targets"])
 
+    def joint_torques(self) -> dict[str, float]:
+        return dict(self._fresh_state()["torques"])
+
+    def joint_modes(self) -> dict[str, str]:
+        return dict(self._fresh_state()["modes"])
+
+    def joint_state_ext(self) -> list[dict]:
+        meta, _ = self._state_ch.call({"op": "joint_state_ext"})
+        return list(meta["joints"])
+
+    def contact_forces(self) -> list[dict]:
+        meta, _ = self._state_ch.call({"op": "contact_forces"})
+        return list(meta["contacts"])
+
     # --- commands ---
 
     def set_cmd_vel(self, vx: float, wz: float) -> None:
@@ -162,6 +176,16 @@ class RemoteWorld:
 
     def set_joint_target(self, name: str, value: float) -> None:
         self.set_joint_targets({name: value})
+
+    def set_joint_torque(self, name: str, torque: float) -> None:
+        self._state_ch.call({"op": "joint_torque", "name": name, "torque": torque})
+        with self._state_lock:
+            self._state_at = 0.0
+
+    def set_joint_mode(self, name: str, mode: str) -> None:
+        self._state_ch.call({"op": "joint_mode", "name": name, "mode": mode})
+        with self._state_lock:
+            self._state_at = 0.0
 
     def head_pitch_deg(self) -> float:
         return math.degrees(self._fresh_state()["joints"].get("joint_head", 0.0))

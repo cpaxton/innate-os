@@ -341,6 +341,9 @@ class VirtualMars:
             jid = self.model.joint(f"robot_{name}").id
             self._joints[name] = (self.model.jnt_qposadr[jid], self.model.jnt_dofadr[jid], home)
         self._joint2_full_min = float(self.model.jnt_range[self.model.joint("robot_joint2").id][0])
+        # Position is the default; effort/current/PWM are opt-in for WBC tests.
+        self._joint_modes = {name: "position" for name in self._joints}
+        self._joint_torques = {name: 0.0 for name in self._joints}
         mimic_name, mimic_source, mimic_mult = world.MIMIC_JOINT
         jid = self.model.joint(f"robot_{mimic_name}").id
         self._mimic = (self.model.jnt_qposadr[jid], self.model.jnt_dofadr[jid], mimic_source, mimic_mult)
@@ -409,6 +412,7 @@ class VirtualMars:
     def set_joint_target(self, name: str, value: float) -> None:
         if name not in self._joints:
             return
+        self._joint_modes[name] = "position"
         qadr, dadr, _home = self._joints[name]
         # The gripper close is commanded 0.6 rad past the mechanical stop
         # (hardware squeezes at its current limit there). Clamped, the error
@@ -421,6 +425,68 @@ class VirtualMars:
 
     def joint_targets(self) -> dict[str, float]:
         return {name: target for name, (_q, _d, target) in self._joints.items()}
+
+    def set_joint_mode(self, name: str, mode: str) -> None:
+        if name not in self._joints:
+            return
+        if mode not in ("position", "effort", "current", "pwm"):
+            raise ValueError(f"unsupported joint mode: {mode}")
+        self._joint_modes[name] = mode
+        if mode != "position":
+            self._joint_torques[name] = 0.0
+
+    def set_joint_torque(self, name: str, torque: float) -> None:
+        if name not in self._joints:
+            return
+        if not math.isfinite(torque):
+            raise ValueError("joint torque must be finite")
+        self._joint_modes[name] = "effort"
+        self._joint_torques[name] = float(torque)
+
+    def joint_torques(self) -> dict[str, float]:
+        return {name: float(self.data.qfrc_applied[dadr]) for name, (_q, dadr, _t) in self._joints.items()}
+
+    def joint_state_ext(self) -> list[dict]:
+        """Position/velocity/torque/load rows for an ArmState bridge.
+
+        The sim has no servo temperature or calibrated current sensor; those
+        fields are zero and the caller must mark them unverified.
+        """
+        rows = []
+        encoder = self.encoder_positions()
+        for name, (_qadr, dadr, _target) in self._joints.items():
+            rows.append(
+                {
+                    "name": name,
+                    "position": float(encoder[name]),
+                    "velocity": float(self.data.qvel[dadr]),
+                    "effort": float(self.data.qfrc_applied[dadr]),
+                    "current": 0.0,
+                    "load": 0.0,
+                    "pwm": 0.0,
+                    "temperature": 0.0,
+                    "mode": self._joint_modes[name],
+                    "valid": True,
+                }
+            )
+        return rows
+
+    def contact_forces(self) -> list[dict]:
+        """World-frame contact wrenches from MuJoCo, for contact-rich checks."""
+        out = []
+        for i in range(self.data.ncon):
+            contact = self.data.contact[i]
+            wrench = np.zeros(6, dtype=np.float64)
+            mujoco.mj_contactForce(self.model, self.data, i, wrench)
+            out.append(
+                {
+                    "geom1": self.model.geom(contact.geom1).name,
+                    "geom2": self.model.geom(contact.geom2).name,
+                    "wrench": wrench.tolist(),
+                    "force": float(np.linalg.norm(wrench[:3])),
+                }
+            )
+        return out
 
     def step(self, duration: float) -> None:
         """Advance the sim by `duration` seconds, applying servos each step."""
@@ -467,6 +533,12 @@ class VirtualMars:
         # real node re-clamps every control cycle from the latest command.
         j2_min = joint2_min_target(self._joints["joint1"][2], self._joint2_full_min)
         for name, (qadr, dadr, target) in self._joints.items():
+            kd, limit = self._servo[dadr]
+            mode = self._joint_modes[name]
+            if mode != "position":
+                torque = self._joint_torques[name]
+                d.qfrc_applied[dadr] = max(-limit, min(limit, torque))
+                continue
             if name == "joint2":
                 target = max(target, j2_min)
             # Structural sag (world.STRUCT_STIFFNESS / ARM_BACKLASH_RAD):
@@ -475,7 +547,6 @@ class VirtualMars:
             # sag matters).
             bias = d.qfrc_bias[dadr]
             target -= bias / world.STRUCT_STIFFNESS + world.ARM_BACKLASH_RAD * math.tanh(bias / world.BACKLASH_TANH_NM)
-            kd, limit = self._servo[dadr]
             torque = KP_JOINT * (target - d.qpos[qadr]) - kd * d.qvel[dadr]
             d.qfrc_applied[dadr] = max(-limit, min(limit, torque))
         mq, md, source, mult = self._mimic
